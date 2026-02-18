@@ -1,0 +1,4 @@
+Motion means a change in position over time.
+An object is in motion when it moves from one place to another.
+Speed tells us how fast an object moves.
+Direction describes the path an object follows.

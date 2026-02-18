@@ -1,0 +1,4 @@
+Addition is used to combine numbers.
+Subtraction is used to take away from a number.
+Multiplication means repeated addition.
+Division means sharing equally.
