@@ -1,0 +1,6 @@
+groq
+fastapi
+uvicorn
+python-dotenv
+pydantic
+xhtml2pdf
