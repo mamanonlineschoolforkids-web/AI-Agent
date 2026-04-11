@@ -35,12 +35,15 @@ def generate_questions(transcript, difficulty, q_type, num_q):
     Rules:
     - If difficulty is hard, questions must be indirect and require thinking.
     - Do NOT repeat transcript sentences directly.
-    - Output JSON only as a list of objects.
     - Each object must have:
     - question (string)
     -Do NOT return plain strings.
     - Do Not Include correct_answer and explanation.
-
+    IMPORTANT:
+        - Return ONLY a valid JSON array.
+        - Do not add any text before or after JSON.
+        - Do not explain.
+        - If format is wrong, regenerate internally before answering.
     Question formats(very important, follow exactly):
 
         1) If q_type is "MCQ":
@@ -65,7 +68,7 @@ def generate_questions(transcript, difficulty, q_type, num_q):
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
+        temperature=0.3
     )
 
     content = response.choices[0].message.content.strip()
@@ -77,6 +80,22 @@ def generate_questions(transcript, difficulty, q_type, num_q):
     # 🟢 حاول نحول المحتوى لـ JSON
     try:
         questions = json.loads(content)
+        valid_questions = []
+
+        for q in questions:
+            if q_type == "MCQ":
+                if "question" in q and "options" in q and isinstance(q["options"], list):
+                    valid_questions.append(q)
+
+            elif q_type == "True/False":
+                if "question" in q and "options" in q and q["options"] == ["True", "False"]:
+                    valid_questions.append(q)
+
+            elif q_type == "Complete":
+                if "question" in q and "options" not in q:
+                    valid_questions.append(q)
+
+        return valid_questions
     except json.JSONDecodeError:
         print("⚠️ Warning: Model returned invalid JSON:")
         print(content)
