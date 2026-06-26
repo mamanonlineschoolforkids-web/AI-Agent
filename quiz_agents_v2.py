@@ -1,22 +1,20 @@
 from groq import Groq
 import json
 import os
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-TRANSCRIPTS_FOLDER = "transcripts"
-QUIZZES_FOLDER = "quizzes"
 MODEL = "llama-3.3-70b-versatile"
-MAX_CHARS_PER_CHUNK = 2000
+MAX_CHARS_PER_CHUNK = 3000
 
 
+# ============================================================
+# SAFE LLM CALL
+# ============================================================
 def safe_llm_call(messages: list, temperature: float = 0.7) -> str:
-    """
-    Wrapper للـ Groq API مع error handling
-    بيرجع None لو في مشكلة بدل ما يكسر الـ app
-    """
     try:
         response = client.chat.completions.create(
             model=MODEL,
@@ -37,8 +35,6 @@ def safe_llm_call(messages: list, temperature: float = 0.7) -> str:
         else:
             raise Exception(f"❌ خطأ في الـ AI: {err[:100]}")
 
-os.makedirs(QUIZZES_FOLDER, exist_ok=True)
-
 
 # ============================================================
 # HELPER: تلخيص الـ transcript لو كبير
@@ -47,7 +43,7 @@ def smart_transcript(transcript: str) -> str:
     if len(transcript) <= MAX_CHARS_PER_CHUNK:
         return transcript
 
-    chunks = [transcript[i:i+MAX_CHARS_PER_CHUNK]
+    chunks = [transcript[i:i + MAX_CHARS_PER_CHUNK]
               for i in range(0, len(transcript), MAX_CHARS_PER_CHUNK)]
     print(f"📄 Transcript split into {len(chunks)} chunks, summarizing...")
 
@@ -59,32 +55,18 @@ Max 150 words. Only facts useful for quiz questions.
 Text: {chunk}
 """
         summary = safe_llm_call([{"role": "user", "content": prompt}], temperature=0)
-        summaries.append(f"[Part {idx+1}]\n{summary}")
-        print(f"   ✅ Chunk {idx+1}/{len(chunks)} summarized")
+        summaries.append(f"[Part {idx + 1}]\n{summary}")
+        print(f"   ✅ Chunk {idx + 1}/{len(chunks)} summarized")
 
     return "\n\n".join(summaries)
 
 
 # ============================================================
-# AGENT 1: Transcript Finder Agent
-# ============================================================
-class TranscriptFinderAgent:
-    def run(self, user_text):
-        user_text = user_text.lower()
-        for file in os.listdir(TRANSCRIPTS_FOLDER):
-            name = file.replace(".txt", "").lower()
-            if name in user_text or user_text in name:
-                with open(os.path.join(TRANSCRIPTS_FOLDER, file), "r", encoding="utf-8") as f:
-                    return f.read(), name
-        return None, None
-
-
-# ============================================================
-# AGENT 2: Question Generator Agent
+# AGENT 1: Question Generator
 # ============================================================
 class QuestionGeneratorAgent:
     def generate(self, transcript, difficulty, q_type, num_q, existing_questions=None):
-        smart_text = smart_transcript(transcript)[:3000]  # حد أقصى 3000 حرف للـ prompt
+        smart_text = smart_transcript(transcript)[:5000]
 
         avoid_section = ""
         if existing_questions:
@@ -108,7 +90,7 @@ Rules:
 {avoid_section}
 Question formats (follow exactly):
 1) MCQ: question, options (array of exactly 4), correct_answer
-2) True/False: question, options=["True","False"], correct_answer ("True" or "False")
+2) True/False: question, options=["صح","خطأ"], correct_answer ("صح" or "خطأ")
 3) Complete: question (with "___"), correct_answer. NO options field.
 
 Return ONLY a valid JSON array. No text before or after.
@@ -117,12 +99,23 @@ Transcript:
 {smart_text}
 """
         content = safe_llm_call([{"role": "user", "content": prompt}], temperature=0.7)
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
+
+        # تنظيف الـ markdown بطريقة أقوى
+        import re
+        # شيل أي ```json ... ``` أو ``` ... ```
+        content = re.sub(r"```json\s*", "", content)
+        content = re.sub(r"```\s*", "", content)
+        content = content.strip()
+
+        # جيب أول [ لحد آخر ] بالظبط
+        start_idx = content.find("[")
+        end_idx = content.rfind("]")
+        if start_idx != -1 and end_idx != -1:
+            content = content[start_idx:end_idx + 1]
+
         if not content:
             return []
+
         try:
             questions = json.loads(content)
             seen = set()
@@ -133,13 +126,14 @@ Transcript:
                     seen.add(key)
                     unique.append(q)
             return unique
-        except json.JSONDecodeError:
-            print("⚠️ Generator returned invalid JSON")
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Generator returned invalid JSON: {e}")
+            print(f"⚠️ Content preview: {content[:200]}")
             return []
 
 
 # ============================================================
-# AGENT 3: Quality Checker Agent (Reflection)
+# AGENT 2: Quality Checker
 # ============================================================
 class QualityCheckerAgent:
     def __init__(self):
@@ -194,7 +188,7 @@ Return ONLY JSON:
 
 
 # ============================================================
-# AGENT 4: Evaluator Agent
+# AGENT 3: Evaluator
 # ============================================================
 class EvaluatorAgent:
     def evaluate(self, questions, student_answers):
@@ -236,8 +230,12 @@ Return ONLY JSON:
 
 
 # ============================================================
-# QUIZ STORAGE
+# STORAGE — JSON files محلي
 # ============================================================
+QUIZZES_FOLDER = "quizzes"
+os.makedirs(QUIZZES_FOLDER, exist_ok=True)
+
+
 class QuizStorage:
     def save(self, quiz_name, lesson_name, difficulty, q_type, questions):
         data = {
@@ -245,7 +243,8 @@ class QuizStorage:
             "lesson_name": lesson_name,
             "difficulty": difficulty,
             "q_type": q_type,
-            "questions": questions
+            "questions": questions,
+            "created_at": datetime.now(timezone.utc).isoformat()
         }
         path = os.path.join(QUIZZES_FOLDER, f"{quiz_name}.json")
         with open(path, "w", encoding="utf-8") as f:
@@ -266,14 +265,21 @@ class QuizStorage:
                 with open(os.path.join(QUIZZES_FOLDER, file), "r", encoding="utf-8") as f:
                     data = json.load(f)
                     quizzes.append({
-                        "file": file.replace(".json", ""),
                         "quiz_name": data.get("quiz_name", ""),
                         "lesson_name": data.get("lesson_name", ""),
                         "difficulty": data.get("difficulty", ""),
                         "q_type": data.get("q_type", ""),
-                        "num_questions": len(data.get("questions", []))
+                        "num_questions": len(data.get("questions", [])),
+                        "created_at": data.get("created_at", "")
                     })
         return quizzes
+
+    def delete(self, quiz_name):
+        path = os.path.join(QUIZZES_FOLDER, f"{quiz_name}.json")
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+        return False
 
 
 # ============================================================
@@ -281,14 +287,10 @@ class QuizStorage:
 # ============================================================
 class QuizOrchestratorAgent:
     def __init__(self):
-        self.finder    = TranscriptFinderAgent()
         self.generator = QuestionGeneratorAgent()
         self.checker   = QualityCheckerAgent()
         self.evaluator = EvaluatorAgent()
         self.storage   = QuizStorage()
-
-    def find_lesson(self, user_text):
-        return self.finder.run(user_text)
 
     def generate_quiz(self, transcript, difficulty, q_type, num_q):
         print(f"\n🚀 Generating {num_q} {q_type} questions ({difficulty})...")
@@ -307,22 +309,17 @@ class QuizOrchestratorAgent:
     def list_quizzes(self):
         return self.storage.list_all()
 
+    def delete_quiz(self, quiz_name):
+        return self.storage.delete(quiz_name)
+
     def evaluate_quiz(self, questions, student_answers):
         return self.evaluator.evaluate(questions, student_answers)
 
 
 # ============================================================
-# PDF GENERATOR - HTML based (يدعم العربي صح)
+# HTML GENERATOR
 # ============================================================
-def generate_quiz_pdf(questions: list, quiz_name: str, show_answers: bool = False) -> str:
-    """
-    بيولد HTML أولاً بخط عربي صح
-    وبعدين يحوله لـ PDF بـ weasyprint
-    pip install weasyprint
-    """
-    os.makedirs("quiz_pdfs", exist_ok=True)
-    suffix = "answers" if show_answers else "student"
-    filename = f"quiz_pdfs/{quiz_name}_{suffix}.html".replace(" ", "_")
+def generate_quiz_html(questions: list, quiz_name: str, show_answers: bool = False) -> str:
     label = "نسخة المعلم" if show_answers else "نسخة الطالب"
     letters = ["أ", "ب", "ج", "د"]
 
@@ -332,7 +329,7 @@ def generate_quiz_pdf(questions: list, quiz_name: str, show_answers: bool = Fals
         opts = q.get("options", [])
         if opts:
             for j, opt in enumerate(opts):
-                letter = letters[j] if j < len(letters) else str(j+1)
+                letter = letters[j] if j < len(letters) else str(j + 1)
                 options_html += f'<div class="option"><span class="letter">{letter}</span> {opt}</div>'
         else:
             options_html = '<div class="option blank">الإجابة: ___________________________</div>'
@@ -342,11 +339,11 @@ def generate_quiz_pdf(questions: list, quiz_name: str, show_answers: bool = Fals
             answer_html = f'<div class="answer">✓ الإجابة الصحيحة: {q["correct_answer"]}</div>'
 
         questions_html += f"""<div class="q-block">
-            <div class="q-text">{i+1}. {q.get("question", "")}</div>
+            <div class="q-text">{i + 1}. {q.get("question", "")}</div>
             {options_html}{answer_html}
         </div>"""
 
-    html = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
 <meta charset="UTF-8">
@@ -376,29 +373,39 @@ def generate_quiz_pdf(questions: list, quiz_name: str, show_answers: bool = Fals
 </body>
 </html>"""
 
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(html)
 
-    print(f"✅ HTML saved: {filename}")
-    return filename
-
-# للاستخدام من app.py
+# ============================================================
+# PUBLIC API
+# ============================================================
 orchestrator = QuizOrchestratorAgent()
 
-def find_transcript(user_text):
-    return orchestrator.find_lesson(user_text)
 
-def generate_questions(transcript, difficulty, q_type, num_q):
+def generate_questions(transcript: str, difficulty: str, q_type: str, num_q: int):
     return orchestrator.generate_quiz(transcript, difficulty, q_type, num_q)
 
-def save_quiz(quiz_name, lesson_name, difficulty, q_type, questions):
+
+def save_quiz(quiz_name: str, lesson_name: str, difficulty: str, q_type: str, questions: list):
     return orchestrator.save_quiz(quiz_name, lesson_name, difficulty, q_type, questions)
 
-def load_quiz(quiz_name):
+
+def load_quiz(quiz_name: str):
     return orchestrator.load_quiz(quiz_name)
+
 
 def list_quizzes():
     return orchestrator.list_quizzes()
 
-def evaluate_answers_ai(questions, student_answers, transcript=None):
+
+def delete_quiz(quiz_name: str):
+    return orchestrator.delete_quiz(quiz_name)
+
+
+def evaluate_answers_ai(questions: list, student_answers: list, transcript=None):
     return orchestrator.evaluate_quiz(questions, student_answers)
+
+
+def get_quiz_html(quiz_name: str, show_answers: bool = False) -> str:
+    data = orchestrator.load_quiz(quiz_name)
+    if not data:
+        return None
+    return generate_quiz_html(data["questions"], quiz_name, show_answers)
