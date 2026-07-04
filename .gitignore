@@ -1,4 +1,5 @@
 .env
 quizzes/
+transcripts/
 __pycache__/
 *.pyc
