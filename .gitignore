@@ -1,3 +1,4 @@
 .env
+quizzes/
 __pycache__/
 *.pyc
